@@ -1,8 +1,15 @@
 // Crusher Receipt Scanner — AI Agent (standalone web version, bilingual EN/AR)
 // Converts each page/receipt into one Excel row after intelligent analysis via /api/analyze (OpenAI Vision).
+// Hardened for large workloads: incremental PDF page rendering (low memory), limited concurrency,
+// automatic retries with backoff, and per-request timeouts so one bad page never blocks the whole batch.
 
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+const CONCURRENCY = 3;          // number of receipts analyzed in parallel
+const MAX_RETRIES = 3;          // automatic retries per page on failure
+const REQUEST_TIMEOUT_MS = 55000; // abort a single analysis call after this long
+const MAX_IMAGE_DIM = 1600;     // downscale images to this max dimension before upload (keeps requests small & fast)
 
 const state = {
   lang: localStorage.getItem('receiptScannerLang') || 'en', // default English
@@ -80,9 +87,16 @@ function addFiles(fileList) {
   fileInput.value = '';
 }
 
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+}
+
 function renderStaged() {
   stagedList.innerHTML = state.staged
-    .map((s) => `<li data-id="${s.id}"><span>📄 ${s.name}</span><button class="remove-btn" data-id="${s.id}">✕</button></li>`)
+    .map((s) => `<li data-id="${s.id}"><span>📄 ${escapeHtml(s.name)} <span class="muted-size">(${formatBytes(s.file.size)})</span></span><button class="remove-btn" data-id="${s.id}">✕</button></li>`)
     .join('');
   startBtn.disabled = state.staged.length === 0;
   stagedList.querySelectorAll('.remove-btn').forEach((btn) => {
@@ -100,14 +114,14 @@ clearBtn.addEventListener('click', () => {
   renderResults();
 });
 
-// ---------- Prepare images: split PDFs into pages + resize/compress ----------
-async function resizeImageFile(file, maxDim = 1600, quality = 0.82) {
+// ---------- Prepare images: resize/compress before upload ----------
+async function resizeImageFile(file, maxDim = MAX_IMAGE_DIM, quality = 0.82) {
   const dataUrl = await fileToDataUrl(file);
   const img = await loadImage(dataUrl);
   const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
   const canvas = document.createElement('canvas');
-  canvas.width = Math.round(img.width * scale);
-  canvas.height = Math.round(img.height * scale);
+  canvas.width = Math.max(1, Math.round(img.width * scale));
+  canvas.height = Math.max(1, Math.round(img.height * scale));
   const ctx = canvas.getContext('2d');
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
   return canvas.toDataURL('image/jpeg', quality);
@@ -117,7 +131,7 @@ function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
-    reader.onerror = reject;
+    reader.onerror = () => reject(new Error(reader.error?.message || 'read error'));
     reader.readAsDataURL(file);
   });
 }
@@ -126,43 +140,80 @@ function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = reject;
+    img.onerror = () => reject(new Error('unsupported or corrupted image file'));
     img.src = src;
   });
 }
 
-async function pdfToImageDataUrls(file, maxDim = 1600) {
-  const buf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-  const urls = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const viewport1 = page.getViewport({ scale: 1 });
-    const scale = Math.min(2, maxDim / Math.max(viewport1.width, viewport1.height));
-    const viewport = page.getViewport({ scale: Math.max(scale, 1) });
-    const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    const ctx = canvas.getContext('2d');
-    await page.render({ canvasContext: ctx, viewport }).promise;
-    urls.push(canvas.toDataURL('image/jpeg', 0.85));
-  }
-  return urls;
+// Render a single PDF page to a compressed JPEG data URL, on demand (keeps memory low for big PDFs).
+async function renderPdfPage(pdf, pageNum, maxDim = MAX_IMAGE_DIM) {
+  const page = await pdf.getPage(pageNum);
+  const viewport1 = page.getViewport({ scale: 1 });
+  const scale = Math.min(2, maxDim / Math.max(viewport1.width, viewport1.height));
+  const viewport = page.getViewport({ scale: Math.max(scale, 0.5) });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const ctx = canvas.getContext('2d');
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  const url = canvas.toDataURL('image/jpeg', 0.85);
+  // help the GC release canvas memory promptly for very large / multi-hundred-page PDFs
+  canvas.width = 0;
+  canvas.height = 0;
+  return url;
 }
 
-// ---------- Call the AI Agent ----------
-async function analyzeImage(dataUrl) {
+// ---------- Call the AI Agent (with timeout + automatic retry) ----------
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+async function analyzeImageOnce(dataUrl) {
   const [, mimeType, base64] = dataUrl.match(/^data:(.+);base64,(.*)$/) || [];
-  const res = await fetch('/api/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ imageBase64: base64, mimeType }),
-  });
-  const json = await res.json();
-  if (!res.ok || json.error) {
-    throw new Error(json.error || t('analysisFailed'));
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64: base64, mimeType }),
+      signal: controller.signal,
+    });
+    let json;
+    try {
+      json = await res.json();
+    } catch (e) {
+      throw new Error(`${t('analysisFailed')} (HTTP ${res.status})`);
+    }
+    if (!res.ok || json.error) {
+      const err = new Error(json.error || t('analysisFailed'));
+      err.status = res.status;
+      throw err;
+    }
+    return json.data;
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error(t('timeoutError'));
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return json.data;
+}
+
+async function analyzeImageWithRetry(dataUrl, onRetry) {
+  let lastErr;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await analyzeImageOnce(dataUrl);
+    } catch (err) {
+      lastErr = err;
+      // Don't retry on hard client errors (bad request / missing key config) — only transient issues.
+      const nonRetryable = err.status === 400 || err.status === 401;
+      if (nonRetryable || attempt === MAX_RETRIES) break;
+      onRetry && onRetry(attempt + 1);
+      await sleep(1000 * Math.pow(2, attempt)); // 1s, 2s, 4s...
+    }
+  }
+  throw lastErr;
 }
 
 function isFlagged(job) {
@@ -172,7 +223,7 @@ function isFlagged(job) {
   return false;
 }
 
-// ---------- Run analysis ----------
+// ---------- Run analysis (streaming task builder + limited concurrency) ----------
 startBtn.addEventListener('click', runAnalysis);
 
 async function runAnalysis() {
@@ -182,52 +233,83 @@ async function runAnalysis() {
   state.jobs = [];
   renderResults();
 
-  // 1) Build task list (split any PDF into pages)
-  const tasks = [];
+  // 1) Build the task queue. PDFs are expanded lazily page-by-page so huge files
+  //    (hundreds of pages) don't need to be fully rendered into memory up front.
+  const tasks = []; // { name, pageIndex, get: () => Promise<dataUrl> } or { error }
   for (const s of state.staged) {
     const isPdf = /\.pdf$/i.test(s.name);
     if (isPdf) {
       try {
-        const urls = await pdfToImageDataUrls(s.file);
-        urls.forEach((url, idx) => tasks.push({ name: s.name, pageIndex: idx + 1, dataUrl: url }));
+        const buf = await s.file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+        for (let p = 1; p <= pdf.numPages; p++) {
+          const pageNum = p;
+          tasks.push({ name: s.name, pageIndex: pageNum, get: () => renderPdfPage(pdf, pageNum) });
+        }
       } catch (err) {
-        console.error('PDF split failed', err);
+        console.error('PDF open failed', err);
         tasks.push({ name: s.name, pageIndex: 1, error: t('pdfSplitFailed', err.message) });
       }
     } else {
-      try {
-        const url = await resizeImageFile(s.file);
-        tasks.push({ name: s.name, pageIndex: 1, dataUrl: url });
-      } catch (err) {
-        tasks.push({ name: s.name, pageIndex: 1, error: t('imageReadFailed', err.message) });
-      }
+      tasks.push({ name: s.name, pageIndex: 1, get: () => resizeImageFile(s.file) });
     }
   }
 
-  // 2) Analyze each task sequentially (for stable calls and clear progress)
-  for (let i = 0; i < tasks.length; i++) {
-    const task = tasks[i];
-    const job = { id: crypto.randomUUID(), name: task.name, pageIndex: task.pageIndex, status: 'processing', data: null, error: null };
-    state.jobs.push(job);
-    renderResults();
-    updateProgress(i, tasks.length, t('progressAnalyzing', task.name, task.pageIndex));
+  // 2) Create job placeholders up front (keeps table order stable even with concurrency).
+  const jobs = tasks.map((task) => ({
+    id: crypto.randomUUID(),
+    name: task.name,
+    pageIndex: task.pageIndex,
+    status: task.error ? 'error' : 'queued',
+    data: null,
+    error: task.error || null,
+  }));
+  state.jobs = jobs;
+  renderResults();
 
-    if (task.error) {
-      job.status = 'error';
-      job.error = task.error;
-    } else {
+  let completed = 0;
+  const total = tasks.length;
+  updateProgress(completed, total, t('progressStarting'));
+
+  // 3) Worker pool: process up to CONCURRENCY receipts at a time.
+  let nextIndex = 0;
+  async function worker() {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= tasks.length) return;
+      const task = tasks[i];
+      const job = jobs[i];
+      if (task.error) {
+        completed++;
+        updateProgress(completed, total, t('progressComplete'));
+        renderResults();
+        continue;
+      }
+      job.status = 'processing';
+      renderResults();
+      updateProgress(completed, total, t('progressAnalyzing', task.name, task.pageIndex));
       try {
-        job.data = await analyzeImage(task.dataUrl);
+        const dataUrl = await task.get();
+        job.data = await analyzeImageWithRetry(dataUrl, (attempt) => {
+          job.status = 'retrying';
+          renderResults();
+          updateProgress(completed, total, t('progressRetrying', task.name, task.pageIndex, attempt));
+        });
         job.status = 'done';
       } catch (err) {
         job.status = 'error';
-        job.error = err.message;
+        job.error = err.message || String(err);
       }
+      completed++;
+      updateProgress(completed, total, t('progressAnalyzing', task.name, task.pageIndex));
+      renderResults();
     }
-    renderResults();
   }
 
-  updateProgress(tasks.length, tasks.length, t('progressComplete'));
+  const workerCount = Math.max(1, Math.min(CONCURRENCY, tasks.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  updateProgress(total, total, t('progressComplete'));
   startBtn.disabled = false;
   clearBtn.disabled = false;
   downloadBtn.disabled = state.jobs.length === 0;
@@ -247,9 +329,12 @@ function renderResults() {
       const flagged = isFlagged(job);
       const cls = job.status === 'error' ? 'errored' : flagged ? 'flagged' : '';
       const data = job.data || {};
-      const statusText = job.status === 'error'
-        ? `${t('statusFailed')}: ${escapeHtml(job.error || '')}`
-        : job.status === 'done' ? t('statusDone') : t('statusProcessing');
+      let statusText;
+      if (job.status === 'error') statusText = `${t('statusFailed')}: ${escapeHtml(job.error || '')}`;
+      else if (job.status === 'done') statusText = t('statusDone');
+      else if (job.status === 'retrying') statusText = t('statusRetrying');
+      else if (job.status === 'processing') statusText = t('statusProcessing');
+      else statusText = t('statusQueued');
       const cells = [
         idx + 1,
         escapeHtml(job.name),
