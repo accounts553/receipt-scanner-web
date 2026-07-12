@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ar" dir="rtl">
+<html lang="en" dir="ltr" id="htmlRoot">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>ماسح إيصالات الكسارات — AI Agent | Sina Investment Group</title>
+<title id="pageTitle">Crusher Receipt Scanner — AI Agent | Sina Investment Group</title>
 <link rel="icon" href="./assets/logo.png" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -15,24 +15,27 @@
       <img src="./assets/logo.png" alt="Sina Investment Group" />
       <div>
         <div class="brand-title">Sina Investment Group (Dubai)</div>
-        <div class="brand-sub">ماسح إيصالات الكسارات — AI Agent</div>
+        <div class="brand-sub" data-i18n="brandSub">Crusher Receipt Scanner — AI Agent</div>
       </div>
     </div>
-    <span class="badge">تحليل ذكي وليس OCR فقط</span>
+    <div class="topbar-right">
+      <span class="badge" data-i18n="badge">Intelligent analysis, not just OCR</span>
+      <button id="langToggle" class="lang-toggle" type="button">العربية</button>
+    </div>
   </header>
 
   <main class="container">
     <section class="card">
-      <h2>1) ارفع الإيصالات</h2>
-      <p class="hint">صور (JPG/PNG) أو ملفات PDF متعددة الصفحات — كل صفحة/إيصال هتتحول لصف واحد في الإكسيل.</p>
+      <h2 data-i18n="step1Title">1) Upload receipts</h2>
+      <p class="hint" data-i18n="step1Hint">Images (JPG/PNG) or multi-page PDFs — each page/receipt becomes one row in the Excel file.</p>
       <label class="dropzone" id="dropzone">
         <input type="file" id="fileInput" multiple accept=".pdf,.jpg,.jpeg,.png,.webp" hidden />
-        <span id="dropzoneText">اضغط هنا أو اسحب الملفات وأفلتها</span>
+        <span id="dropzoneText" data-i18n="dropzoneText">Click here or drag and drop files</span>
       </label>
       <ul id="stagedList" class="staged-list"></ul>
       <div class="actions">
-        <button id="startBtn" class="btn btn-primary" disabled>ابدأ التحليل</button>
-        <button id="clearBtn" class="btn btn-ghost">مسح الكل</button>
+        <button id="startBtn" class="btn btn-primary" disabled data-i18n="startBtn">Start Analysis</button>
+        <button id="clearBtn" class="btn btn-ghost" data-i18n="clearBtn">Clear All</button>
       </div>
       <div id="progressWrap" class="progress-wrap" hidden>
         <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
@@ -42,8 +45,8 @@
 
     <section class="card">
       <div class="row-between">
-        <h2>2) النتائج</h2>
-        <button id="downloadBtn" class="btn btn-secondary" disabled>⬇️ تحميل ملف إكسيل</button>
+        <h2 data-i18n="step2Title">2) Results</h2>
+        <button id="downloadBtn" class="btn btn-secondary" disabled data-i18n="downloadBtn">⬇️ Download Excel File</button>
       </div>
       <div class="table-scroll">
         <table id="resultsTable">
@@ -53,16 +56,17 @@
           <tbody id="resultsBody"></tbody>
         </table>
       </div>
-      <p id="emptyState" class="hint">لسه مفيش نتائج — ارفع إيصالات وابدأ التحليل.</p>
+      <p id="emptyState" class="hint" data-i18n="emptyState">No results yet — upload receipts and start the analysis.</p>
     </section>
 
-    <footer class="footnote">
-      الأداة بتحلل الصور عن طريق نموذج ذكاء اصطناعي (وليس قراءة حروف عادية OCR) — بتفهم الحقول المختلفة من كل كسارة،
-      وتتحقق حسابيًا إن الوزن الصافي = القائم − الفارغ، وتعلّم أي إيصال فيه شك باللون الأصفر.
-      الصور بترفع للتحليل فقط ولا يتم تخزينها بشكل دائم.
+    <footer class="footnote" data-i18n="footnote">
+      This tool analyzes images using an AI model (not plain OCR) — it understands varying field names from each
+      crusher, verifies that net weight = gross − tare, and flags any receipt in doubt in yellow.
+      Images are uploaded for analysis only and are not stored permanently.
     </footer>
   </main>
 
+  <script src="./i18n.js"></script>
   <script src="./script.js"></script>
 </body>
 </html>

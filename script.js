@@ -1,34 +1,23 @@
-// ماسح إيصالات الكسارات — AI Agent (نسخة ويب مستقلة)
-// يحول كل صفحة/إيصال إلى صف واحد في إكسيل، بعد تحليل ذكي عبر /api/analyze (OpenAI Vision).
+// Crusher Receipt Scanner — AI Agent (standalone web version, bilingual EN/AR)
+// Converts each page/receipt into one Excel row after intelligent analysis via /api/analyze (OpenAI Vision).
 
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-const FIELD_ORDER = [
-  'اسم_الجهة', 'نوع_المستند', 'رقم_الايصال', 'التاريخ_والوقت', 'العميل_او_المورد',
-  'نوع_المادة', 'المصدر_او_الكسارة', 'الموقع', 'اسم_السائق', 'رقم_السيارة',
-  'الوزن_القائم', 'الوزن_الفارغ', 'الوزن_الصافي', 'وحدة_الوزن', 'الكمية', 'الوحدة',
-  'سعر_الوحدة', 'الاجمالي', 'اسم_المشغل', 'رقم_امر_الشراء', 'رقم_بونة_الوزن',
-  'يوجد_ختم_او_توقيع', 'ملاحظات_مكتوبة_بخط_اليد', 'ملاحظات_التحقق', 'مستوى_الثقة',
-];
-
-const FIELD_LABELS = {
-  اسم_الجهة: 'اسم الجهة', نوع_المستند: 'نوع المستند', رقم_الايصال: 'رقم الإيصال',
-  التاريخ_والوقت: 'التاريخ والوقت', العميل_او_المورد: 'العميل/المورد', نوع_المادة: 'نوع المادة',
-  المصدر_او_الكسارة: 'المصدر/الكسارة', الموقع: 'الموقع', اسم_السائق: 'اسم السائق',
-  رقم_السيارة: 'رقم السيارة', الوزن_القائم: 'الوزن القائم', الوزن_الفارغ: 'الوزن الفارغ',
-  الوزن_الصافي: 'الوزن الصافي', وحدة_الوزن: 'وحدة الوزن', الكمية: 'الكمية', الوحدة: 'الوحدة',
-  سعر_الوحدة: 'سعر الوحدة', الاجمالي: 'الإجمالي', اسم_المشغل: 'اسم المشغل',
-  رقم_امر_الشراء: 'رقم أمر الشراء', رقم_بونة_الوزن: 'رقم بونة الوزن',
-  يوجد_ختم_او_توقيع: 'يوجد ختم/توقيع', ملاحظات_مكتوبة_بخط_اليد: 'ملاحظات بخط اليد',
-  ملاحظات_التحقق: 'ملاحظات التحقق', مستوى_الثقة: 'مستوى الثقة',
-};
-
 const state = {
+  lang: localStorage.getItem('receiptScannerLang') || 'en', // default English
   staged: [], // { id, file, name }
   jobs: [],   // { id, name, pageIndex, status, data, error }
 };
 
+function t(key, ...args) {
+  const val = STRINGS[state.lang][key];
+  return typeof val === 'function' ? val(...args) : val;
+}
+
+const htmlRoot = document.getElementById('htmlRoot');
+const pageTitleEl = document.getElementById('pageTitle');
+const langToggle = document.getElementById('langToggle');
 const fileInput = document.getElementById('fileInput');
 const dropzone = document.getElementById('dropzone');
 const stagedList = document.getElementById('stagedList');
@@ -42,14 +31,37 @@ const headerRow = document.getElementById('headerRow');
 const resultsBody = document.getElementById('resultsBody');
 const emptyState = document.getElementById('emptyState');
 
-// ---------- بناء رأس الجدول مرة واحدة ----------
+// ---------- Language handling ----------
+function applyLanguage() {
+  htmlRoot.lang = state.lang;
+  htmlRoot.dir = state.lang === 'ar' ? 'rtl' : 'ltr';
+  pageTitleEl.textContent = t('pageTitle');
+  document.title = t('pageTitle');
+  langToggle.textContent = t('langToggleLabel');
+
+  document.querySelectorAll('[data-i18n]').forEach((el) => {
+    const key = el.getAttribute('data-i18n');
+    el.textContent = t(key);
+  });
+
+  buildHeader();
+  renderResults();
+}
+
+langToggle.addEventListener('click', () => {
+  state.lang = state.lang === 'en' ? 'ar' : 'en';
+  localStorage.setItem('receiptScannerLang', state.lang);
+  applyLanguage();
+});
+
+// ---------- Build table header ----------
 function buildHeader() {
-  const cols = ['#', 'اسم الملف', 'رقم الصفحة', ...FIELD_ORDER.map((k) => FIELD_LABELS[k]), 'الحالة'];
+  const labels = FIELD_LABELS[state.lang];
+  const cols = [t('colIndex'), t('colFileName'), t('colPageNumber'), ...FIELD_ORDER.map((k) => labels[k]), t('colStatus')];
   headerRow.innerHTML = cols.map((c) => `<th>${c}</th>`).join('');
 }
-buildHeader();
 
-// ---------- رفع/سحب الملفات ----------
+// ---------- File upload / drag & drop ----------
 dropzone.addEventListener('click', () => fileInput.click());
 dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
 dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
@@ -88,7 +100,7 @@ clearBtn.addEventListener('click', () => {
   renderResults();
 });
 
-// ---------- تجهيز الصور: PDF لصفحات + ضغط/تصغير ----------
+// ---------- Prepare images: split PDFs into pages + resize/compress ----------
 async function resizeImageFile(file, maxDim = 1600, quality = 0.82) {
   const dataUrl = await fileToDataUrl(file);
   const img = await loadImage(dataUrl);
@@ -138,7 +150,7 @@ async function pdfToImageDataUrls(file, maxDim = 1600) {
   return urls;
 }
 
-// ---------- استدعاء الـ AI Agent ----------
+// ---------- Call the AI Agent ----------
 async function analyzeImage(dataUrl) {
   const [, mimeType, base64] = dataUrl.match(/^data:(.+);base64,(.*)$/) || [];
   const res = await fetch('/api/analyze', {
@@ -148,7 +160,7 @@ async function analyzeImage(dataUrl) {
   });
   const json = await res.json();
   if (!res.ok || json.error) {
-    throw new Error(json.error || 'فشل التحليل');
+    throw new Error(json.error || t('analysisFailed'));
   }
   return json.data;
 }
@@ -160,7 +172,7 @@ function isFlagged(job) {
   return false;
 }
 
-// ---------- تشغيل التحليل ----------
+// ---------- Run analysis ----------
 startBtn.addEventListener('click', runAnalysis);
 
 async function runAnalysis() {
@@ -170,7 +182,7 @@ async function runAnalysis() {
   state.jobs = [];
   renderResults();
 
-  // 1) بناء قائمة المهام (تقسيم أي PDF لصفحات)
+  // 1) Build task list (split any PDF into pages)
   const tasks = [];
   for (const s of state.staged) {
     const isPdf = /\.pdf$/i.test(s.name);
@@ -180,32 +192,32 @@ async function runAnalysis() {
         urls.forEach((url, idx) => tasks.push({ name: s.name, pageIndex: idx + 1, dataUrl: url }));
       } catch (err) {
         console.error('PDF split failed', err);
-        tasks.push({ name: s.name, pageIndex: 1, error: 'فشل تقسيم ملف PDF: ' + err.message });
+        tasks.push({ name: s.name, pageIndex: 1, error: t('pdfSplitFailed', err.message) });
       }
     } else {
       try {
         const url = await resizeImageFile(s.file);
         tasks.push({ name: s.name, pageIndex: 1, dataUrl: url });
       } catch (err) {
-        tasks.push({ name: s.name, pageIndex: 1, error: 'فشل قراءة الصورة: ' + err.message });
+        tasks.push({ name: s.name, pageIndex: 1, error: t('imageReadFailed', err.message) });
       }
     }
   }
 
-  // 2) تحليل كل مهمة بالتتابع (عشان استقرار الاستدعاء ووضوح التقدم)
+  // 2) Analyze each task sequentially (for stable calls and clear progress)
   for (let i = 0; i < tasks.length; i++) {
-    const t = tasks[i];
-    const job = { id: crypto.randomUUID(), name: t.name, pageIndex: t.pageIndex, status: 'processing', data: null, error: null };
+    const task = tasks[i];
+    const job = { id: crypto.randomUUID(), name: task.name, pageIndex: task.pageIndex, status: 'processing', data: null, error: null };
     state.jobs.push(job);
     renderResults();
-    updateProgress(i, tasks.length, `جاري تحليل: ${t.name} (صفحة ${t.pageIndex})`);
+    updateProgress(i, tasks.length, t('progressAnalyzing', task.name, task.pageIndex));
 
-    if (t.error) {
+    if (task.error) {
       job.status = 'error';
-      job.error = t.error;
+      job.error = task.error;
     } else {
       try {
-        job.data = await analyzeImage(t.dataUrl);
+        job.data = await analyzeImage(task.dataUrl);
         job.status = 'done';
       } catch (err) {
         job.status = 'error';
@@ -215,7 +227,7 @@ async function runAnalysis() {
     renderResults();
   }
 
-  updateProgress(tasks.length, tasks.length, 'اكتمل التحليل ✅');
+  updateProgress(tasks.length, tasks.length, t('progressComplete'));
   startBtn.disabled = false;
   clearBtn.disabled = false;
   downloadBtn.disabled = state.jobs.length === 0;
@@ -227,7 +239,7 @@ function updateProgress(done, total, label) {
   progressLabel.textContent = `${label} (${done}/${total})`;
 }
 
-// ---------- عرض النتائج ----------
+// ---------- Render results ----------
 function renderResults() {
   emptyState.hidden = state.jobs.length > 0;
   resultsBody.innerHTML = state.jobs
@@ -235,12 +247,15 @@ function renderResults() {
       const flagged = isFlagged(job);
       const cls = job.status === 'error' ? 'errored' : flagged ? 'flagged' : '';
       const data = job.data || {};
+      const statusText = job.status === 'error'
+        ? `${t('statusFailed')}: ${escapeHtml(job.error || '')}`
+        : job.status === 'done' ? t('statusDone') : t('statusProcessing');
       const cells = [
         idx + 1,
         escapeHtml(job.name),
         job.pageIndex,
-        ...FIELD_ORDER.map((k) => escapeHtml(data[k] || '')),
-        job.status === 'error' ? `فشل: ${escapeHtml(job.error || '')}` : job.status === 'done' ? 'تم' : 'جاري...',
+        ...FIELD_ORDER.map((k) => escapeHtml(translateValue(state.lang, data[k]) || '')),
+        statusText,
       ];
       return `<tr class="${cls}">${cells.map((c) => `<td>${c}</td>`).join('')}</tr>`;
     })
@@ -251,14 +266,16 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// ---------- تصدير إكسيل ----------
+// ---------- Excel export ----------
 downloadBtn.addEventListener('click', exportExcel);
 
 async function exportExcel() {
   const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet('الإيصالات', { views: [{ rightToLeft: true }] });
+  const rtl = state.lang === 'ar';
+  const sheet = workbook.addWorksheet(t('excelSheetName'), { views: [{ rightToLeft: rtl }] });
+  const labels = FIELD_LABELS[state.lang];
 
-  const headers = ['#', 'اسم الملف', 'رقم الصفحة', ...FIELD_ORDER.map((k) => FIELD_LABELS[k]), 'الحالة'];
+  const headers = [t('colIndex'), t('colFileName'), t('colPageNumber'), ...FIELD_ORDER.map((k) => labels[k]), t('colStatus')];
   const headerRowXlsx = sheet.addRow(headers);
   headerRowXlsx.font = { bold: true };
   headerRowXlsx.eachCell((cell) => {
@@ -273,15 +290,18 @@ async function exportExcel() {
     const flagged = isFlagged(job);
     if (flagged || job.status === 'error') flaggedCount += 1;
     const data = job.data || {};
+    const statusText = job.status === 'error'
+      ? `${t('statusFailed')}: ${job.error || ''}`
+      : job.status === 'done' ? t('statusDone') : job.status;
     const row = sheet.addRow([
       idx + 1,
       job.name,
       job.pageIndex,
-      ...FIELD_ORDER.map((k) => data[k] || ''),
-      job.status === 'error' ? `فشل: ${job.error || ''}` : job.status === 'done' ? 'تم' : job.status,
+      ...FIELD_ORDER.map((k) => translateValue(state.lang, data[k]) || ''),
+      statusText,
     ]);
     row.eachCell((cell) => {
-      cell.alignment = { horizontal: 'right', vertical: 'middle', wrapText: true };
+      cell.alignment = { horizontal: rtl ? 'right' : 'left', vertical: 'middle', wrapText: true };
       cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' }, left: { style: 'thin' }, right: { style: 'thin' } };
     });
     if (flagged || job.status === 'error') {
@@ -291,7 +311,7 @@ async function exportExcel() {
     }
   });
 
-  const summaryRow = sheet.addRow(['', `إجمالي الإيصالات: ${state.jobs.length}`, '', ...FIELD_ORDER.map(() => ''), `تحتاج مراجعة: ${flaggedCount}`]);
+  const summaryRow = sheet.addRow(['', t('excelTotalReceipts', state.jobs.length), '', ...FIELD_ORDER.map(() => ''), t('excelNeedsReview', flaggedCount)]);
   summaryRow.font = { bold: true, italic: true };
 
   sheet.columns.forEach((col, i) => { col.width = i === 0 ? 6 : i === 1 ? 22 : i === 2 ? 10 : 18; });
@@ -308,3 +328,6 @@ async function exportExcel() {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+// ---------- Init ----------
+applyLanguage();
