@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ماسح إيصالات الكسارات — AI Agent | Sina Investment Group</title>
+<link rel="icon" href="./assets/logo.png" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="./assets/logo.png" alt="Sina Investment Group" />
+      <div>
+        <div class="brand-title">Sina Investment Group (Dubai)</div>
+        <div class="brand-sub">ماسح إيصالات الكسارات — AI Agent</div>
+      </div>
+    </div>
+    <span class="badge">تحليل ذكي وليس OCR فقط</span>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <h2>1) ارفع الإيصالات</h2>
+      <p class="hint">صور (JPG/PNG) أو ملفات PDF متعددة الصفحات — كل صفحة/إيصال هتتحول لصف واحد في الإكسيل.</p>
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="fileInput" multiple accept=".pdf,.jpg,.jpeg,.png,.webp" hidden />
+        <span id="dropzoneText">اضغط هنا أو اسحب الملفات وأفلتها</span>
+      </label>
+      <ul id="stagedList" class="staged-list"></ul>
+      <div class="actions">
+        <button id="startBtn" class="btn btn-primary" disabled>ابدأ التحليل</button>
+        <button id="clearBtn" class="btn btn-ghost">مسح الكل</button>
+      </div>
+      <div id="progressWrap" class="progress-wrap" hidden>
+        <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+        <div id="progressLabel" class="progress-label"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="row-between">
+        <h2>2) النتائج</h2>
+        <button id="downloadBtn" class="btn btn-secondary" disabled>⬇️ تحميل ملف إكسيل</button>
+      </div>
+      <div class="table-scroll">
+        <table id="resultsTable">
+          <thead>
+            <tr id="headerRow"></tr>
+          </thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+      <p id="emptyState" class="hint">لسه مفيش نتائج — ارفع إيصالات وابدأ التحليل.</p>
+    </section>
+
+    <footer class="footnote">
+      الأداة بتحلل الصور عن طريق نموذج ذكاء اصطناعي (وليس قراءة حروف عادية OCR) — بتفهم الحقول المختلفة من كل كسارة،
+      وتتحقق حسابيًا إن الوزن الصافي = القائم − الفارغ، وتعلّم أي إيصال فيه شك باللون الأصفر.
+      الصور بترفع للتحليل فقط ولا يتم تخزينها بشكل دائم.
+    </footer>
+  </main>
+
+  <script src="./script.js"></script>
+</body>
+</html>
